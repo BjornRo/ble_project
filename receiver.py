@@ -61,29 +61,31 @@ class AdvertisementHandler:
         return settings
 
 
-class MyChar:
+class CharacteristicHandler:
     def __init__(self, ble: bluetooth.BLE):
         SERVICE_UUID = bluetooth.UUID(0x180F)
         CHAR_UUID = bluetooth.UUID(0x2A19)
         self._handle = None
+        # ble.gap_advertise(None)
 
-        # Register service
-        ble.gatts_register_services()
         ((self._handle,),) = ble.gatts_register_services(
             ((SERVICE_UUID, ((CHAR_UUID, bluetooth.FLAG_READ | bluetooth.FLAG_WRITE),)),)
         )
 
-
-advertisement = AdvertisementHandler.load()
-char = MyChar(ble)
-
-
-def bt_irq(self, event, data):
-    if event == 3:
+    def handle_event(self, data):
         conn_handle, value_handle = data
         if value_handle == self._handle:
             value = ble.gatts_read(self._handle)
             print("Characteristic written:", value)
+
+
+advertisement = AdvertisementHandler.load()
+characteristic = CharacteristicHandler(ble)
+
+
+def bt_irq(event, data):
+    if event == 3:
+        characteristic.handle_event(data)
     elif event == 5:
         advertisement.handle_event(data)
 
