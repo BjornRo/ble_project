@@ -34,23 +34,22 @@ class AdvertisementHandler:
     def handle_event(self, data: tuple[int, memoryview, int, int, memoryview]):
         addr_type, mac_addr, adv_type, rssi, adv_data = data
         if adv_data[2:6] == b"\xca\xfe\x12\x34" and len(adv_data) == 7:
-            if self.remote_mac_addr is None:
-                remote_mac_addr = bytes(mac_addr)
-                f = open(self.remote_file, "wb")
-                f.write(remote_mac_addr)
-                f.flush()
-                del f
-            elif self.remote_mac_addr == mac_addr:
+            if self.remote_mac_addr == mac_addr:
                 now = time.ticks_ms()
                 if time.ticks_diff(now, self.last_message) >= self.cooldown_ms:
                     self.last_message = now  # update last_message
                     self.increase_setting() if adv_data[6] == 2 else self.decrease_setting()
+            elif self.remote_mac_addr is None:
+                remote_mac_addr = bytes(mac_addr)
+                f = open(self.remote_file, "wb")
+                f.write(remote_mac_addr)
+                f.flush()
 
     @staticmethod
     def load(settings_file="settings"):
         try:
             with open(settings_file, "rt") as f:
-                __curr_setting = f.readline()
+                __curr_setting = f.readline().rstrip()
                 __settings_cfg = ujson.load(f)
                 settings = AdvertisementHandler(__curr_setting, __settings_cfg)
         except:
@@ -65,31 +64,37 @@ class CharacteristicHandler:
     def __init__(self, ble: bluetooth.BLE):
         SERVICE_UUID = bluetooth.UUID(0x180F)
         CHAR_UUID = bluetooth.UUID(0x2A19)
-        self._handle = None
-        # ble.gap_advertise(None)
 
-        ((self._handle,),) = ble.gatts_register_services(
-            ((SERVICE_UUID, ((CHAR_UUID, bluetooth.FLAG_READ | bluetooth.FLAG_WRITE),)),)
+        self.handles = ble.gatts_register_services(
+            (
+                (
+                    SERVICE_UUID,
+                    ((CHAR_UUID, bluetooth.FLAG_READ | bluetooth.FLAG_WRITE),),
+                ),
+            )
         )
+        print(self.handles)
 
     def handle_event(self, data):
         conn_handle, value_handle = data
-        if value_handle == self._handle:
-            value = ble.gatts_read(self._handle)
-            print("Characteristic written:", value)
+        print("Characteristic written:", data)
 
 
 advertisement = AdvertisementHandler.load()
-characteristic = CharacteristicHandler(ble)
+# characteristic = CharacteristicHandler(ble)
 
 
 def bt_irq(event, data):
     if event == 3:
-        characteristic.handle_event(data)
+        # characteristic.handle_event(data)
+        pass
     elif event == 5:
         advertisement.handle_event(data)
+        addr_type, mac_addr, adv_type, rssi, adv_data = data
+        if adv_data[2:6] == b"\xca\xfe\x12\x34":
+            print(advertisement.setting_index)
 
 
 ble.irq(bt_irq)
 ble.active(True)
-ble.gap_scan(0)
+ble.gap_scan(0, 120000, 120000)
