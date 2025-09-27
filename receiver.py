@@ -33,8 +33,6 @@ class AdvertisementHandler:
 
     def handle_event(self, data: tuple[int, memoryview, int, int, memoryview]):
         addr_type, mac_addr, adv_type, rssi, adv_data = data
-        mac_addr: memoryview
-        adv_data: memoryview
         if adv_data[2:6] == b"\xca\xfe\x12\x34" and len(adv_data) == 7:
             if self.remote_mac_addr is None:
                 remote_mac_addr = bytes(mac_addr)
@@ -45,11 +43,8 @@ class AdvertisementHandler:
             elif self.remote_mac_addr == mac_addr:
                 now = time.ticks_ms()
                 if time.ticks_diff(now, self.last_message) >= self.cooldown_ms:
-                    last_message = now  # update last_message
-                    if adv_data[6] == 2:
-                        self.increase_setting()
-                    else:
-                        self.decrease_setting()
+                    self.last_message = now  # update last_message
+                    self.increase_setting() if adv_data[6] == 2 else self.decrease_setting()
 
     @staticmethod
     def load(settings_file="settings"):
@@ -68,26 +63,15 @@ class AdvertisementHandler:
 
 class MyChar:
     def __init__(self, ble: bluetooth.BLE):
-        self._ble = ble
-        self._ble.active(True)
-        self._ble.irq(self._irq)
-
         SERVICE_UUID = bluetooth.UUID(0x180F)
         CHAR_UUID = bluetooth.UUID(0x2A19)
         self._handle = None
 
         # Register service
-        self._ble.gatts_register_services()
-        ((self._handle,),) = self._ble.gatts_register_services(
+        ble.gatts_register_services()
+        ((self._handle,),) = ble.gatts_register_services(
             ((SERVICE_UUID, ((CHAR_UUID, bluetooth.FLAG_READ | bluetooth.FLAG_WRITE),)),)
         )
-
-    def _irq(self, event, data):
-        if event == 3:
-            conn_handle, value_handle = data
-            if value_handle == self._handle:
-                value = self._ble.gatts_read(self._handle)
-                print("Characteristic written:", value)
 
 
 advertisement = AdvertisementHandler.load()
@@ -95,9 +79,11 @@ char = MyChar(ble)
 
 
 def bt_irq(self, event, data):
-    global remote_mac_addr, last_message
     if event == 3:
-        pass
+        conn_handle, value_handle = data
+        if value_handle == self._handle:
+            value = ble.gatts_read(self._handle)
+            print("Characteristic written:", value)
     elif event == 5:
         advertisement.handle_event(data)
 
