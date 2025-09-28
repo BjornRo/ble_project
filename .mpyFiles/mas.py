@@ -1,0 +1,218 @@
+# import micropython
+# micropython.opt_level(3)
+
+import _thread
+import time
+
+import aioble
+import bluetooth
+import uasyncio
+import ujson
+import uos
+import utils
+from aioble.client import ClientService
+from ucollections import namedtuple
+
+REMOTE_FILE = "remote"
+SETTINGS_FILE = "settings"
+
+
+def write_settings(setting: str, cfg: dict[str, list[float]]):
+    with open(SETTINGS_FILE, "wt") as f:
+        f.write(f"{setting}\n")
+        f.write(ujson.dumps(cfg))
+
+
+try:
+    with open(SETTINGS_FILE, "rt") as f:
+        current_setting: str = f.readline().rstrip()
+        settings_cfg: dict[str, list[float]] = ujson.load(f)
+except:
+    with open(SETTINGS_FILE, "wt") as f:
+        current_setting = "default"
+        settings_cfg = dict(default=[0.0, 0.25, 0.5, 0.75, 1.0])
+        write_settings(current_setting, settings_cfg)
+setting_index = 0  # Start from lowest
+
+
+ConnHandle = int
+ValueHandle = int
+StartHandle = int
+EndHandle = int
+AddrType = int  # Mac: 0 = Public, 1 = Random
+AdvertiseType = int  # advertisement event type
+DefHandle = int  # handle of the characteristic declaration
+
+
+async def main():
+    ble = bluetooth.BLE()
+    ble.active(True)
+
+    await uasyncio.gather(
+        RemoteHandler(ble).serve(),
+    )
+
+
+class RemoteHandler:
+    REMOTE_SERVICE_UUID = bluetooth.UUID("A9DCFE62-41AF-49E3-ADC0-000000000000")
+    REMOTE_PAIRING_CHAR_UUID = bluetooth.UUID("A9DCFE62-41AF-49E3-ADC0-000000000001")
+    REMOTE_NOTIFY_CHAR_UUID = bluetooth.UUID("A9DCFE62-41AF-49E3-ADC0-000000000002")
+    DEFAULT_KEY = b"\xca\xfe\x13\x37"
+
+    def __init__(self, ble: bluetooth.BLE):
+        self.ble = ble
+        try:
+            with open(REMOTE_FILE, "rb") as f:
+                self.remote_key = f.read()
+        except:
+            self.remote_key = self.DEFAULT_KEY
+
+    async def serve(self, timeout=2000):
+        while True:
+            async with aioble.scan(0, 100_000, 100_000) as scanner:
+                async for result in scanner:
+                    for m, data in result.manufacturer():
+                        if m == 0xFF:
+                            try:
+                                task: uasyncio.Task = uasyncio.create_task(self.handle_conn(result.device, data))
+                                await uasyncio.wait_for_ms(task, timeout)
+                            except:
+                                pass
+                            break
+
+    async def handle_conn(self, device: aioble.Device, uid_data: bytes):
+        result: int = 2  # 0: Success, 1: Generate new keys, 2: Fail
+        if self.remote_key != self.DEFAULT_KEY:
+            if len(uid_data) == len(self.remote_key) and uid_data == self.remote_key:
+                result = 0
+        elif len(uid_data) == len(self.DEFAULT_KEY) and uid_data == self.DEFAULT_KEY:
+            result = 1
+        if result != 2:
+            try:
+                async with await device.connect() as conn:
+                    if service := await conn.service(self.REMOTE_SERVICE_UUID):
+                        if result == 1 and not await self.sync_keys(service):
+                            return
+                        if char := await service.characteristic(self.REMOTE_NOTIFY_CHAR_UUID):
+                            data = await char.notified()
+                            if len(data) == 1:
+                                await self.handle_notify(bool(data[0]))
+            except uasyncio.TimeoutError:
+                pass
+            except uasyncio.CancelledError:
+                pass
+
+    async def sync_keys(self, service: ClientService) -> bool:
+        if char := await service.characteristic(self.REMOTE_PAIRING_CHAR_UUID):
+            try:
+                new_key = utils.gen_64bits()
+                await char.write(new_key, True)
+                f = open(REMOTE_FILE, "wb")
+                f.write(new_key)
+                f.flush()
+                self.remote_key = new_key
+                return True
+            except aioble.GattError:
+                pass
+        return False
+
+    async def handle_notify(self, increase: bool):
+        global setting_index
+        if increase:
+            setting_index = min(len(settings_cfg[current_setting]) - 1, setting_index + 1)
+        else:
+            setting_index = max(0, setting_index - 1)
+        value = settings_cfg[current_setting][setting_index]
+
+
+class PhoneHandler:
+    SERVICE_UUID = bluetooth.UUID("A9DCFE62-41AF-49E3-ADC0-100000000000")
+    JSON_DATA_UUID = bluetooth.UUID("A9DCFE62-41AF-49E3-ADC0-100000000001")
+    SETTING_DATA_UUID = bluetooth.UUID("A9DCFE62-41AF-49E3-ADC0-100000000002")
+
+    def __init__(self, ble: bluetooth.BLE):
+        self.ble = ble
+        service = aioble.Service(self.SERVICE_UUID)
+        self.json_characteristic = aioble.Characteristic(
+            service,
+            self.JSON_DATA_UUID,
+            write=True,
+            read=True,
+            capture=True,
+            notify=True,
+        )
+        self.setting_characteristic = aioble.Characteristic(
+            service,
+            self.SETTING_DATA_UUID,
+            write=True,
+            read=True,
+            capture=True,
+            notify=True,
+        )
+        aioble.register_services(service)
+        self.connections: dict[ConnHandle, aioble.device.DeviceConnection] = {}
+
+    async def serve(self, interval_us: int | None = 250_000, name="MyProject"):
+        self.setting_characteristic.write(current_setting)
+        self.json_characteristic.write(ujson.dumps(settings_cfg))
+        tasks = [uasyncio.create_task(t) for t in (self.handle_json_char(), self.handle_setting_char())]
+        while True:
+            connection = await aioble.advertise(interval_us, name=name, services=[self.SERVICE_UUID])
+            assert connection is not None
+            assert connection._conn_handle is not None
+            self.connections[connection._conn_handle] = connection
+            try:
+                await connection.disconnected(None)
+            except:
+                pass
+            try:
+                del self.connections[connection._conn_handle]
+            except:
+                pass
+
+    async def force_disconnect(self, conn_handler: ConnHandle):
+        try:
+            conn = self.connections.pop(conn_handler)
+            if conn._task is not None:
+                conn._task.cancel()
+            await conn.disconnect()
+        except:
+            pass
+
+    async def handle_setting_char(self):
+        global current_setting
+        conn_handler: ConnHandle
+        data: bytes
+        while True:
+            conn_handler, data = await self.setting_characteristic.written()  # type: ignore
+            try:
+                data_str = data.decode()
+                if data_str and data_str in settings_cfg:
+                    current_setting = data_str
+                    self.setting_characteristic.write(data, True)
+                    continue
+            except:
+                pass
+            await self.force_disconnect(conn_handler)
+
+    async def handle_json_char(self):
+        global settings_cfg
+        conn_handler: ConnHandle
+        data: bytes
+        while True:
+            conn_handler, data = await self.json_characteristic.written()  # type: ignore
+            try:
+                new_config: dict[str, list[float]] = ujson.loads(data)
+                for key, value in new_config.items():
+                    if not key or not all((isinstance(v, float) for v in value)):
+                        break
+                else:
+                    settings_cfg = new_config
+                    self.json_characteristic.write(data, True)
+                    continue
+            except:
+                pass
+            await self.force_disconnect(conn_handler)
+
+
+uasyncio.run(main())
