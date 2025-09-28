@@ -1,7 +1,6 @@
-import time
-
 import bluetooth
 import ujson
+import utime
 
 ble = bluetooth.BLE()
 
@@ -35,8 +34,8 @@ class AdvertisementHandler:
         addr_type, mac_addr, adv_type, rssi, adv_data = data
         if adv_data[2:6] == b"\xca\xfe\x12\x34" and len(adv_data) == 7:
             if self.remote_mac_addr == mac_addr:
-                now = time.ticks_ms()
-                if time.ticks_diff(now, self.last_message) >= self.cooldown_ms:
+                now = utime.ticks_ms()
+                if utime.ticks_diff(now, self.last_message) >= self.cooldown_ms:
                     self.last_message = now  # update last_message
                     self.increase_setting() if adv_data[6] == 2 else self.decrease_setting()
             elif self.remote_mac_addr is None:

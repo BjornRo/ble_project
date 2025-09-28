@@ -5,7 +5,7 @@ import uhashlib
 import utime
 
 
-def gen_key() -> bytes:
+def gen_64bits() -> bytes:
     # return ((urandom.getrandbits(32) << 32) | urandom.getrandbits(32)).to_bytes(8)
     return uhashlib.sha1(utime.ticks_us().to_bytes(8)).digest()[:8]
 
@@ -47,18 +47,6 @@ ADV_TYPE_UUID128_MORE = 0x6
 ADV_TYPE_APPEARANCE = 0x19
 
 ADV_MAX_PAYLOAD = 31
-
-
-UART_UUID = bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
-UART_TX = (
-    bluetooth.UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"),
-    FLAG_READ | FLAG_NOTIFY,
-)
-UART_RX = (
-    bluetooth.UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"),
-    FLAG_WRITE | FLAG_WRITE_NO_RESPONSE,
-)
-UART_SERVICE = (UART_UUID, (UART_TX, UART_RX))
 
 
 def advertising_payload(
