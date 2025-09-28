@@ -7,6 +7,7 @@ import uasyncio
 import ujson
 import utils
 from aioble.client import ClientService
+from machine import PWM, Pin
 
 REMOTE_FILE = "remote"
 SETTINGS_FILE = "settings"
@@ -37,10 +38,24 @@ async def main():
     ble = bluetooth.BLE()
     ble.active(True)
 
-    await uasyncio.gather(
-        RemoteHandler(ble).serve(),
-        PhoneHandler(ble).serve(),
-    )
+    try:
+        await uasyncio.gather(
+            RemoteHandler(ble, LED(26, settings_cfg["default"][setting_index])).serve(),
+            PhoneHandler(ble).serve(),
+        )
+    except BaseException as e:
+        print(e)
+
+    ble.active(False)
+
+
+class LED:
+    def __init__(self, pin: int, init_percentage=0.0, freq=1000) -> None:
+        self.led = PWM(Pin(pin), freq=freq)
+        self.control(init_percentage)
+
+    def control(self, percentage: float):
+        self.led.duty(round(1023 * percentage))
 
 
 class RemoteHandler:
@@ -49,8 +64,9 @@ class RemoteHandler:
     REMOTE_NOTIFY_CHAR_UUID = bluetooth.UUID("A9DCFE62-41AF-49E3-ADC0-000000000002")
     DEFAULT_KEY = b"\xca\xfe\x13\x37"
 
-    def __init__(self, ble: bluetooth.BLE):
+    def __init__(self, ble: bluetooth.BLE, led: LED):
         self.ble = ble
+        self.led = led
         try:
             with open(REMOTE_FILE, "rb") as f:
                 self.remote_key = f.read()
@@ -59,7 +75,7 @@ class RemoteHandler:
 
     async def serve(self, timeout=2000):
         while True:
-            async with aioble.scan(0, 100_000, 100_000) as scanner:
+            async with aioble.scan(0, 100_000, 100_000, True) as scanner:
                 async for result in scanner:
                     for m, data in result.manufacturer():
                         if m == 0xFF:
@@ -112,7 +128,7 @@ class RemoteHandler:
             setting_index = min(len(settings_cfg[current_setting]) - 1, setting_index + 1)
         else:
             setting_index = max(0, setting_index - 1)
-        value = settings_cfg[current_setting][setting_index]
+        self.led.control(settings_cfg[current_setting][setting_index])
 
 
 class PhoneHandler:
@@ -192,7 +208,7 @@ class PhoneHandler:
             try:
                 new_config: dict[str, list[float]] = ujson.loads(data)
                 for key, value in new_config.items():
-                    if not key or not all((isinstance(v, float) for v in value)):
+                    if not key or not all((isinstance(v, float) and 0 <= v <= 1.0 for v in value)):
                         break
                 else:
                     settings_cfg = new_config
