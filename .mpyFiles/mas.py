@@ -1,37 +1,26 @@
 # import micropython
 # micropython.opt_level(3)
 
-import _thread
-import time
-
 import aioble
 import bluetooth
 import uasyncio
 import ujson
-import uos
 import utils
 from aioble.client import ClientService
-from ucollections import namedtuple
 
 REMOTE_FILE = "remote"
 SETTINGS_FILE = "settings"
-
-
-def write_settings(setting: str, cfg: dict[str, list[float]]):
-    with open(SETTINGS_FILE, "wt") as f:
-        f.write(f"{setting}\n")
-        f.write(ujson.dumps(cfg))
+SELECTED_SETTINGS_FILE = "selected_setting"
 
 
 try:
-    with open(SETTINGS_FILE, "rt") as f:
-        current_setting: str = f.readline().rstrip()
-        settings_cfg: dict[str, list[float]] = ujson.load(f)
+    current_setting: str = utils.load_file(SELECTED_SETTINGS_FILE)
+    settings_cfg: dict[str, list[float]] = ujson.loads(utils.load_file(SETTINGS_FILE))
 except:
-    with open(SETTINGS_FILE, "wt") as f:
-        current_setting = "default"
-        settings_cfg = dict(default=[0.0, 0.25, 0.5, 0.75, 1.0])
-        write_settings(current_setting, settings_cfg)
+    current_setting = "default"
+    settings_cfg = dict(default=[0.0, 0.25, 0.5, 0.75, 1.0])
+    utils.write_to_file(SELECTED_SETTINGS_FILE, current_setting)
+    utils.write_to_file(SETTINGS_FILE, ujson.dumps(settings_cfg))
 setting_index = 0  # Start from lowest
 
 
@@ -50,6 +39,7 @@ async def main():
 
     await uasyncio.gather(
         RemoteHandler(ble).serve(),
+        PhoneHandler(ble).serve(),
     )
 
 
@@ -165,10 +155,7 @@ class PhoneHandler:
                 await connection.disconnected(None)
             except:
                 pass
-            try:
-                del self.connections[connection._conn_handle]
-            except:
-                pass
+            await self.force_disconnect(connection._conn_handle)
 
     async def force_disconnect(self, conn_handler: ConnHandle):
         try:
@@ -190,6 +177,7 @@ class PhoneHandler:
                 if data_str and data_str in settings_cfg:
                     current_setting = data_str
                     self.setting_characteristic.write(data, True)
+                    utils.write_to_file(SELECTED_SETTINGS_FILE, current_setting)
                     continue
             except:
                 pass
@@ -209,10 +197,12 @@ class PhoneHandler:
                 else:
                     settings_cfg = new_config
                     self.json_characteristic.write(data, True)
+                    utils.write_to_file(SETTINGS_FILE, ujson.dumps(settings_cfg))
                     continue
             except:
                 pass
             await self.force_disconnect(conn_handler)
 
 
-uasyncio.run(main())
+if __name__ == "__main__":
+    uasyncio.run(main())
