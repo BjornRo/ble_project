@@ -18,23 +18,20 @@
 #define KEY_FILE "/key"
 
 // Default pairing key -- includes manufacturer-data
-// const uint8_t _DEFAULT_KEY[4] = {0xCA, 0xFE, 0x13, 0x37};
-// std::string default_key((char*)_DEFAULT_KEY, sizeof(_DEFAULT_KEY));
-
-std::string default_key("\xCA\xFE\x13\x37", 4);
-std::string remote_key;
+String default_key = "rl-default";
+String remote_key = "";
 
 // BLE objects
 BLEServer* pServer;
 BLECharacteristic* pairingChar;
 BLECharacteristic* notifyChar;
-BLE2902* pBLE2902;
 BLEAdvertising* pAdvertising;
 
 #define INCREASE_PIN 12
-#define DECREASE_PIN 22
+#define DECREASE_PIN 14
 
 bool connected = false;
+bool received = false;
 
 volatile bool incr_pressed = false;
 volatile bool decr_pressed = false;
@@ -67,6 +64,7 @@ void IRAM_ATTR handle_decr() {
 
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
+        Serial.println("Connected");
         connected = true;
     };
 
@@ -76,11 +74,19 @@ class MyServerCallbacks : public BLEServerCallbacks {
 };
 class PairingCallback : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pChar) {
-        remote_key = pChar->getValue();
+        String value = pChar->getValue();
+        Serial.println();
+        Serial.println(value);
+        Serial.println();
+        if (value == "OK") {
+            received = true;
+            return;
+        }
         File f = SPIFFS.open(KEY_FILE, "w");
         if (!f) abort();
-        f.write(remote_key.data(), remote_key.size());
+        f.write((const uint8_t*)value.c_str(), value.length());
         f.close();
+        remote_key = value;
     }
 };
 
@@ -90,24 +96,25 @@ class NotifyCallback : public BLEDescriptorCallbacks {
 };
 
 void setup() {
-    pinMode(RGB_BUILTIN, OUTPUT);
-    digitalWrite(RGB_BUILTIN, HIGH);
+    // pinMode(RGB_BUILTIN, OUTPUT);
+    // digitalWrite(RGB_BUILTIN, HIGH);
     pinMode(INCREASE_PIN, INPUT_PULLUP);
     pinMode(DECREASE_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(INCREASE_PIN), handle_incr, FALLING);
     attachInterrupt(digitalPinToInterrupt(DECREASE_PIN), handle_decr, FALLING);
 
     Serial.begin(115200);
-    delay(200);
+    delay(100);
     if (!SPIFFS.begin(true)) {
         Serial.println("Failed to mount SPIFFS");
         abort();
     }
-    digitalWrite(RGB_BUILTIN, LOW);
+    // digitalWrite(RGB_BUILTIN, LOW);
 }
 
 void ble_handler() {
-    BLEDevice::init("MyRemote");
+    Serial.println(getDeviceName());
+    BLEDevice::init(getDeviceName());
 
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
@@ -115,21 +122,20 @@ void ble_handler() {
 
     pairingChar = pService->createCharacteristic(
         REMOTE_PAIRING_CHAR_UUID,
-        BLECharacteristic::PROPERTY_WRITE);
-    // pairingChar->setCallbacks(new PairingCallback());
+        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+    pairingChar->setCallbacks(new PairingCallback());
 
     notifyChar = pService->createCharacteristic(
         REMOTE_NOTIFY_CHAR_UUID,
         BLECharacteristic::PROPERTY_NOTIFY);
 
+    BLE2902* pBLE2902 = new BLE2902();
     pBLE2902->setNotifications(true);
     notifyChar->addDescriptor(pBLE2902);
 
     pService->start();
 
     BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
-
-    pAdvertising->setManufacturerData(genManufacturerData());
 
     pAdvertising->addServiceUUID(REMOTE_SERVICE_UUID);
     pAdvertising->setMinPreferred(0x06);
@@ -143,19 +149,35 @@ void loop() {
         Serial.println("Button pressed, waiting for BLE connection...");
         while (!connected) delay(5);
 
+        while (!received) delay(5);
+
+        delay(100);
         if (incr_pressed) {
             notifyChar->setValue("\x01");
         } else {
             notifyChar->setValue("\x00");
         }
         notifyChar->notify();
-        Serial.println("BLE notification sent, going to deep sleep...");
-
         delay(100);
+        if (incr_pressed) {
+            notifyChar->setValue("\x01");
+        } else {
+            notifyChar->setValue("\x00");
+        }
+        notifyChar->notify();
+        delay(100);
+        if (incr_pressed) {
+            notifyChar->setValue("\x01");
+        } else {
+            notifyChar->setValue("\x00");
+        }
+        notifyChar->notify();
+
+        Serial.println("BLE notification sent, going to deep sleep...");
     }
     esp_sleep_enable_ext1_wakeup(
         (1ULL << INCREASE_PIN) | (1ULL << DECREASE_PIN),
-        ESP_EXT1_WAKEUP_ANY_HIGH);
+        ESP_EXT1_WAKEUP_ANY_LOW);
     // esp_sleep_enable_ext0_wakeup(INCREASE_PIN, 0);
     // esp_sleep_enable_ext0_wakeup(DECREASE_PIN, 0);
     esp_deep_sleep_start();
@@ -180,16 +202,19 @@ void loop() {
 //         delay(100); // allow BLE notification to be sent
 //     }
 
-std::string genManufacturerData() {
-    if (!remote_key.empty()) return remote_key;
+String getDeviceName() {
+    if (remote_key.length()) return remote_key;
 
     File f = SPIFFS.open(KEY_FILE, "r");
-    if (!f) return default_key;
+    if (!f || !f.available()) return default_key;
 
     size_t len = f.size();
-    remote_key.resize(len);
-    f.readBytes(remote_key.data(), len);
+    char buf[len + 1];
+    f.readBytes(buf, len);
+    buf[len] = '\0';
     f.close();
+
+    remote_key = String(buf);
     return remote_key;
 }
 

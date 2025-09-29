@@ -6,7 +6,7 @@ import bluetooth
 import uasyncio
 import ujson
 import utils
-from aioble.client import ClientService
+from aioble.client import ClientCharacteristic, ClientService
 from machine import PWM, Pin
 
 REMOTE_FILE = "remote"
@@ -16,13 +16,15 @@ SELECTED_SETTINGS_FILE = "selected_setting"
 
 try:
     current_setting: str = utils.load_file(SELECTED_SETTINGS_FILE)
+    if not current_setting.strip():
+        raise Exception
     settings_cfg: dict[str, list[float]] = ujson.loads(utils.load_file(SETTINGS_FILE))
 except:
     current_setting = "default"
     settings_cfg = dict(default=[0.0, 0.25, 0.5, 0.75, 1.0])
     utils.write_to_file(SELECTED_SETTINGS_FILE, current_setting)
     utils.write_to_file(SETTINGS_FILE, ujson.dumps(settings_cfg))
-setting_index = 0  # Start from lowest
+setting_index = 1  # Start from lowest
 
 
 ConnHandle = int
@@ -34,6 +36,16 @@ AdvertiseType = int  # advertisement event type
 DefHandle = int  # handle of the characteristic declaration
 
 
+def r(delete=False):
+    import uos
+    try:
+        if delete:
+            uos.remove(REMOTE_FILE)
+    except:
+        pass
+    uasyncio.run(main())
+
+
 async def main():
     ble = bluetooth.BLE()
     ble.active(True)
@@ -41,7 +53,7 @@ async def main():
     try:
         await uasyncio.gather(
             RemoteHandler(ble, LED(26, settings_cfg["default"][setting_index])).serve(),
-            PhoneHandler(ble).serve(),
+            # PhoneHandler(ble).serve(),
         )
     except BaseException as e:
         print(e)
@@ -62,64 +74,78 @@ class RemoteHandler:
     REMOTE_SERVICE_UUID = bluetooth.UUID("A9DCFE62-41AF-49E3-ADC0-000000000000")
     REMOTE_PAIRING_CHAR_UUID = bluetooth.UUID("A9DCFE62-41AF-49E3-ADC0-000000000001")
     REMOTE_NOTIFY_CHAR_UUID = bluetooth.UUID("A9DCFE62-41AF-49E3-ADC0-000000000002")
-    DEFAULT_KEY = b"\xca\xfe\x13\x37"
+    DEFAULT_KEY = "rl-default"
 
     def __init__(self, ble: bluetooth.BLE, led: LED):
         self.ble = ble
         self.led = led
         try:
-            with open(REMOTE_FILE, "rb") as f:
+            with open(REMOTE_FILE, "rt") as f:
                 self.remote_key = f.read()
         except:
             self.remote_key = self.DEFAULT_KEY
 
-    async def serve(self, timeout=2000):
+    async def serve(self, timeout=5000):
         while True:
             async with aioble.scan(0, 100_000, 100_000, True) as scanner:
                 async for result in scanner:
-                    for m, data in result.manufacturer():
-                        if m == 0xFF:
-                            try:
-                                task: uasyncio.Task = uasyncio.create_task(self.handle_conn(result.device, data))
-                                await uasyncio.wait_for_ms(task, timeout)
-                            except:
-                                pass
-                            break
+                    name = result.name()
+                    if name == self.remote_key and self.REMOTE_SERVICE_UUID in result.services():
+                        assert name is not None
+                        try:
+                            await uasyncio.wait_for_ms(self.handle_conn(result.device, name), timeout)
+                        except:
+                            pass
+                        break
 
-    async def handle_conn(self, device: aioble.Device, uid_data: bytes):
+    async def handle_conn(self, device: aioble.Device, name: str):
         result: int = 2  # 0: Success, 1: Generate new keys, 2: Fail
-        if self.remote_key != self.DEFAULT_KEY:
-            if len(uid_data) == len(self.remote_key) and uid_data == self.remote_key:
-                result = 0
-        elif len(uid_data) == len(self.DEFAULT_KEY) and uid_data == self.DEFAULT_KEY:
-            result = 1
+        if len(name) == len(self.DEFAULT_KEY):
+            if name == self.DEFAULT_KEY:
+                result = 1
+        else:
+            result = 0
         if result != 2:
             try:
+                print("connecting")
                 async with await device.connect() as conn:
-                    if service := await conn.service(self.REMOTE_SERVICE_UUID):
-                        if result == 1 and not await self.sync_keys(service):
-                            return
-                        if char := await service.characteristic(self.REMOTE_NOTIFY_CHAR_UUID):
-                            data = await char.notified()
-                            if len(data) == 1:
-                                await self.handle_notify(bool(data[0]))
-            except uasyncio.TimeoutError:
-                pass
-            except uasyncio.CancelledError:
-                pass
+                    print("connected")
+                    service = await conn.service(self.REMOTE_SERVICE_UUID)
+                    assert service is not None
 
-    async def sync_keys(self, service: ClientService) -> bool:
-        if char := await service.characteristic(self.REMOTE_PAIRING_CHAR_UUID):
-            try:
-                new_key = utils.gen_64bits()
-                await char.write(new_key, True)
-                f = open(REMOTE_FILE, "wb")
-                f.write(new_key)
-                f.flush()
-                self.remote_key = new_key
-                return True
-            except aioble.GattError:
-                pass
+                    pairingchar = await service.characteristic(self.REMOTE_PAIRING_CHAR_UUID)
+                    notifychar = await service.characteristic(self.REMOTE_NOTIFY_CHAR_UUID)
+                    assert pairingchar is not None and notifychar is not None
+
+                    if result == 1 and not await self.sync_keys(pairingchar):
+                        await pairingchar.write("OK", True)
+                        return
+                    await pairingchar.write("OK", True)
+                    print("notifydata receving")
+                    data = await notifychar.notified()
+                    print("notifydata", data)
+                    if len(data) == 1:
+                        await self.handle_notify(bool(data[0]))
+                    print("end service", service)
+            except uasyncio.TimeoutError as e:
+                print("te", e)
+            except uasyncio.CancelledError as e:
+                print("ce", e)
+
+    async def sync_keys(self, pairingchar: ClientCharacteristic) -> bool:
+        try:
+            print("syncing keys")
+            new_key = "rl-" + utils.gen_random_string()
+            await pairingchar.write(new_key, True)
+            f = open(REMOTE_FILE, "wt")
+            f.write(new_key)
+            f.flush()
+            self.remote_key = new_key
+            print("syncing keys end")
+            return True
+        except aioble.GattError:
+            pass
+        print("syncing keys failed")
         return False
 
     async def handle_notify(self, increase: bool):
