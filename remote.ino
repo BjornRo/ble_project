@@ -36,32 +36,6 @@ bool received = false;
 volatile bool incr_pressed = false;
 volatile bool decr_pressed = false;
 
-// volatile uint32_t last_incr_time = 0;
-// volatile uint32_t last_decr_time = 0;
-
-void IRAM_ATTR handle_incr() {
-    // uint32_t now = millis();
-    // if (now - last_incr_time > 250) {
-    incr_pressed = true;
-    //     last_incr_time = now;
-    // }
-}
-
-void IRAM_ATTR handle_decr() {
-    // uint32_t now = millis();
-    // if (now - last_decr_time > 250) {
-    decr_pressed = true;
-    //     last_decr_time = now;
-    // }
-    // ble_handler();
-    // while (true) {
-    //     if (connected) {
-    //         notifyChar->setValue("\x00");
-    //         notifyChar->notify();
-    //     }
-    // }
-}
-
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         Serial.println("Connected");
@@ -78,10 +52,6 @@ class PairingCallback : public BLECharacteristicCallbacks {
         Serial.println();
         Serial.println(value);
         Serial.println();
-        if (value == "OK") {
-            received = true;
-            return;
-        }
         File f = SPIFFS.open(KEY_FILE, "w");
         if (!f) abort();
         f.write((const uint8_t*)value.c_str(), value.length());
@@ -100,8 +70,8 @@ void setup() {
     // digitalWrite(RGB_BUILTIN, HIGH);
     pinMode(INCREASE_PIN, INPUT_PULLUP);
     pinMode(DECREASE_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(INCREASE_PIN), handle_incr, FALLING);
-    attachInterrupt(digitalPinToInterrupt(DECREASE_PIN), handle_decr, FALLING);
+    attachInterrupt(digitalPinToInterrupt(INCREASE_PIN), NULL, FALLING);
+    attachInterrupt(digitalPinToInterrupt(DECREASE_PIN), NULL, FALLING);
 
     Serial.begin(115200);
     delay(100);
@@ -122,16 +92,13 @@ void ble_handler() {
 
     pairingChar = pService->createCharacteristic(
         REMOTE_PAIRING_CHAR_UUID,
-        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+        BLECharacteristic::PROPERTY_WRITE);
     pairingChar->setCallbacks(new PairingCallback());
 
     notifyChar = pService->createCharacteristic(
         REMOTE_NOTIFY_CHAR_UUID,
-        BLECharacteristic::PROPERTY_NOTIFY);
-
-    BLE2902* pBLE2902 = new BLE2902();
-    pBLE2902->setNotifications(true);
-    notifyChar->addDescriptor(pBLE2902);
+        BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
+    notifyChar->addDescriptor(new BLE2902());
 
     pService->start();
 
@@ -144,47 +111,33 @@ void ble_handler() {
 }
 
 void loop() {
-    if (incr_pressed || decr_pressed) {
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1) {
+        uint64_t wakePinMask = esp_sleep_get_ext1_wakeup_status();
+
         ble_handler();
         Serial.println("Button pressed, waiting for BLE connection...");
         while (!connected) delay(5);
 
-        while (!received) delay(5);
-
-        delay(100);
-        if (incr_pressed) {
-            notifyChar->setValue("\x01");
-        } else {
-            notifyChar->setValue("\x00");
-        }
+        bool increase = (wakePinMask & (1ULL << INCREASE_PIN));
+        String c = (increase) ? "1" : "0";
+        delay(500);
+        notifyChar->setValue(c);
         notifyChar->notify();
-        delay(100);
-        if (incr_pressed) {
-            notifyChar->setValue("\x01");
-        } else {
-            notifyChar->setValue("\x00");
-        }
+        delay(1500);
+        delay(500);
+        notifyChar->setValue(c);
         notifyChar->notify();
-        delay(100);
-        if (incr_pressed) {
-            notifyChar->setValue("\x01");
-        } else {
-            notifyChar->setValue("\x00");
-        }
-        notifyChar->notify();
-
+        delay(1500);
         Serial.println("BLE notification sent, going to deep sleep...");
     }
     esp_sleep_enable_ext1_wakeup(
         (1ULL << INCREASE_PIN) | (1ULL << DECREASE_PIN),
         ESP_EXT1_WAKEUP_ANY_LOW);
-    // esp_sleep_enable_ext0_wakeup(INCREASE_PIN, 0);
-    // esp_sleep_enable_ext0_wakeup(DECREASE_PIN, 0);
     esp_deep_sleep_start();
 }
 
 //    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1) {
-//         uint64_t wakePinMask = esp_sleep_get_ext1_wakeup_status();
+//         ;
 
 //         ble_handler(); // start BLE server
 //         while (!connected) delay(5);

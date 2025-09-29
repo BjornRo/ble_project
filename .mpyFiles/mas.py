@@ -38,6 +38,7 @@ DefHandle = int  # handle of the characteristic declaration
 
 def r(delete=False):
     import uos
+
     try:
         if delete:
             uos.remove(REMOTE_FILE)
@@ -93,9 +94,10 @@ class RemoteHandler:
                     if name == self.remote_key and self.REMOTE_SERVICE_UUID in result.services():
                         assert name is not None
                         try:
-                            await uasyncio.wait_for_ms(self.handle_conn(result.device, name), timeout)
-                        except:
-                            pass
+                            await self.handle_conn(result.device, name)
+                            # await uasyncio.wait_for_ms(self.handle_conn(result.device, name), timeout)
+                        except BaseException as e:
+                            print("waited for", e)
                         break
 
     async def handle_conn(self, device: aioble.Device, name: str):
@@ -118,9 +120,7 @@ class RemoteHandler:
                     assert pairingchar is not None and notifychar is not None
 
                     if result == 1 and not await self.sync_keys(pairingchar):
-                        await pairingchar.write("OK", True)
                         return
-                    await pairingchar.write("OK", True)
                     print("notifydata receving")
                     data = await notifychar.notified()
                     print("notifydata", data)
@@ -131,6 +131,8 @@ class RemoteHandler:
                 print("te", e)
             except uasyncio.CancelledError as e:
                 print("ce", e)
+            except BaseException as e:
+                print("be", dir(e), e, repr(e))
 
     async def sync_keys(self, pairingchar: ClientCharacteristic) -> bool:
         try:
